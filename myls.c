@@ -4,22 +4,27 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <pwd.h>
+#include <grp.h>
+#include <time.h>
 // 储存所有选项名称
 typedef struct
 {
     int show_all;    //-a
     int long_format; //-l
-    int show_inode;//-i
-    int show_blocks;//-s 磁盘数
+    int show_inode;  //-i
+    int show_blocks; //-s 磁盘数
+    int sort_time;   // t,按照时间修改顺序 新-旧
+    int reverse;     //-r, 反转排序
 } Options;
 
-
-//文件信息结构提
-typedef struct{
-    char*name;//文件名字
-    char*path;//完整路径很重要
-    struct stat st;//文件属性
-}FileInfo;
+// 文件信息结构提
+typedef struct
+{
+    char *name;     // 文件名字
+    char *path;     // 完整路径很重要
+    struct stat st; // 文件属性
+} FileInfo;
 
 // 解析命令行参数
 void parse_options(int argc, char *argv[], Options *opts)
@@ -46,11 +51,17 @@ void parse_options(int argc, char *argv[], Options *opts)
                 opts->long_format = 1;
                 break;
             case 'i':
-            opts->show_inode=1;
-            break;
+                opts->show_inode = 1;
+                break;
             case 's':
-            opts->show_blocks=1;
-            break;
+                opts->show_blocks = 1;
+                break;
+            case 't':
+                opts->sort_time = 1;
+                break;
+            case 'r':
+                opts->reverse = 1;
+                break;
             default:
                 fprintf(stderr,
                         "myls:invalid option -- '%c'\n",
@@ -61,122 +72,192 @@ void parse_options(int argc, char *argv[], Options *opts)
     }
 }
 
-
-//获得完整路径：目录名字加上文件名字
-char*join_path(const char*dir,const char * name){
+// 获得完整路径：目录名字加上文件名字
+char *join_path(const char *dir, const char *name)
+{
     int len;
-    char*path;
-    len=strlen(dir)+strlen(name)+2;//一个分隔符一个'\0'
-    path=malloc(len);
-    if(path==NULL){
+    char *path;
+    len = strlen(dir) + strlen(name) + 2; // 一个分隔符一个'\0'
+    path = malloc(len);
+    if (path == NULL)
+    {
         return NULL;
     }
-    sprintf(path,"%s/%s",dir,name);
+    sprintf(path, "%s/%s", dir, name);
     return path;
 }
 
-//读取目录内文件信息数组，名字路径属性
-FileInfo *read_dir_entries(const char *path,Options *opts,int *count){
-    //目录流指针，结构体，文件信息，初始容量，文件数量
-    DIR*dir;
-    struct dirent*entry;
-    FileInfo *files=NULL;
-    int capacity=16;
-    *count=0;
+// 读取目录内文件信息数组，名字路径属性
+FileInfo *read_dir_entries(const char *path, Options *opts, int *count)
+{
+    // 目录流指针，结构体，文件信息，初始容量，文件数量
+    DIR *dir;
+    struct dirent *entry;
+    FileInfo *files = NULL;
+    int capacity = 16;
+    *count = 0;
 
-    dir=opendir(path);
-    if(dir==NULL){
+    dir = opendir(path);
+    if (dir == NULL)
+    {
         fprintf(stderr,
-        "myls:cannot open directory '%s':%s\n",
-        path,
-    strerror(errno));
-    return NULL;
+                "myls:cannot open directory '%s':%s\n",
+                path,
+                strerror(errno));
+        return NULL;
     }
 
-    //先给文件信息分配初始数量
-    files=malloc(sizeof(FileInfo)*capacity);
-    if(files==NULL){
+    // 先给文件信息分配初始数量
+    files = malloc(sizeof(FileInfo) * capacity);
+    if (files == NULL)
+    {
         closedir(dir);
         return NULL;
     }
 
-    while ((entry = readdir(dir)) != NULL){
-        char*fullpath;
-        //没有-a跳过
+    while ((entry = readdir(dir)) != NULL)
+    {
+        char *fullpath;
+        // 没有-a跳过
         if (entry->d_name[0] == '.' && !opts->show_all)
         {
             continue; // 因为以.开头是隐藏文件，.代表当前目录
         }
-        
-        //数组满了扩容
-        if(*count>=capacity){
-            capacity*=2;
-            files=realloc(files,sizeof(FileInfo)*capacity);
-            if(files==NULL){
+
+        // 数组满了扩容
+        if (*count >= capacity)
+        {
+            capacity *= 2;
+            files = realloc(files, sizeof(FileInfo) * capacity);
+            if (files == NULL)
+            {
                 closedir(dir);
                 return NULL;
             }
         }
 
-//想要获得信息，1.先得到完整路径2.获得文件属性3.保存到信息数组里面
-//记得文件数量要加一，更新
-        //获得完整路径
-        fullpath=join_path(path,entry->d_name);
-        if(fullpath==NULL){
+        // 想要获得信息，1.先得到完整路径2.获得文件属性3.保存到信息数组里面
+        // 记得文件数量要加一，更新
+        // 获得完整路径
+        fullpath = join_path(path, entry->d_name);
+        if (fullpath == NULL)
+        {
             continue;
         }
 
-        //获取文件属性
-        if(lstat(fullpath,&files[*count].st)==-1){
-            fprintf(stderr,"myls: last failed '%s':%s\n",
-                fullpath,
-            strerror(errno));
+        // 获取文件属性
+        if (lstat(fullpath, &files[*count].st) == -1)
+        {
+            fprintf(stderr,
+                    "myls: lstat failed '%s':%s\n",
+                    fullpath,
+                    strerror(errno));
+            free(fullpath);
             continue;
         }
 
-        //保存文件信息
-        files[*count].name=strdup(entry->d_name);
-        files[*count].path=fullpath;
+        // 保存文件信息
+        files[*count].name = strdup(entry->d_name);
+        files[*count].path = fullpath;
         (*count)++;
     }
     closedir(dir);
     return files;
 }
 
-//输出文件信息
-void print_entries(FileInfo*files,int count,Options*opts){
-    //这个函数实现打印inode和块大小,文件名字
-    int i;
-    for(int i=0;i<count;i++){
-        if(opts->show_inode){
-            printf("%lu ",files[i].st.st_ino);
-        }
-//打印的是文件大小，磁盘数量和文件大小不一样
-        if(opts->show_blocks){
-            printf("ld",(files[i].st.st_blocks+1)/2);
-        }
 
-        printf("%s\n",files[i].name);
+/*
+-t实现
+*/
+//按照文件名字排序，穿进去的是两个文件
+int compare_name(const void *a,const void *b){
+    const FileInfo*fa=a;
+    const FileInfo*fb=b;
+
+    return strcmp(fa->name,fb->name);//按照字母从小到大排序，ls默认排序
+}
+
+
+//为-t服务，按照修改时间排序
+int compare_time(const void *a,const void *b){
+const FileInfo*fa=a;
+const FileInfo*fb=b;
+//st_time是文件最后修改时间，数字越大，文件月薪
+if(fb->st.st_mtime > fa->st.st_mtime){
+return 1;
+}else{
+    return -1;
+}
+return strcmp(fa->name,fb->name);//时间一样就按照名字排序
+}
+
+//排序
+void  sort_entries(FileInfo*files,int count,Options*opts){
+    if(opts->sort_time){//有-t就按照时间顺序排序
+qsort(files,count,sizeof(FileInfo),compare_time);
+    }else{
+        qsort(files,//没有就按照名字排序
+              count,
+              sizeof(FileInfo),
+              compare_name);
     }
 }
 
-//释放FileInfo数组
-void free_entries(FileInfo*files,int count){
+// 输出文件信息
+void print_entries(FileInfo *files, int count, Options *opts)
+{
+    // 这个函数实现打印inode和块大小,文件名字
     int i;
-    for(int i=0;i<count;i++){
-        //先释放每一个元素名字和路径，在释放整个数组
+/*
+-r实现
+*/
+    int start;
+    int end;
+    int step;
+    if(opts->reverse){
+        start=count-1;
+        end=-1;
+        step=-1;
+    }else{
+        start=0;
+end=count;
+step=1;
+    }
+    for (i = start; i !=end; i+=step)
+    {
+        if (opts->show_inode)
+        {
+            printf("%lu ", files[i].st.st_ino);
+        }
+        // 打印的是文件大小，磁盘数量和文件大小不一样
+        if (opts->show_blocks)
+        {
+            printf("%ld ",
+                   (files[i].st.st_blocks + 1) / 2);
+        }
+
+        printf("%s\n", files[i].name);
+    }
+}
+
+// 释放FileInfo数组
+void free_entries(FileInfo *files, int count)
+{
+    int i;
+    for (int i = 0; i < count; i++)
+    {
+        // 先释放每一个元素名字和路径，在释放整个数组
         free(files[i].name);
         free(files[i].path);
     }
     free(files);
 }
 
-
-//列出目录
-// 参数path目录路径,show_title是否显示目录标题（输入多个目录的是时候
+// 列出目录
+//  参数path目录路径,show_title是否显示目录标题（输入多个目录的是时候
 int list_dir(const char *path, int show_title, Options *opts)
 {
-    FileInfo*files;
+    FileInfo *files;
     int count;
 
     if (show_title)
@@ -184,17 +265,19 @@ int list_dir(const char *path, int show_title, Options *opts)
         printf("%s:\n", path);
     }
 
-    //读取目录,得到文件信息，名字完整路径属性
-    files=read_dir_entries(path,opts,&count);
-    if(files==NULL)return -1;
-    
-    //输出
-    print_entries(files,count,opts);
+    // 读取目录,得到文件信息，名字完整路径属性
+    files = read_dir_entries(path, opts, &count);
+    if (files == NULL)
+        return -1;
 
-    //释放
-    free_entries(files,count);
+    sort_entries(files,count,opts);
+
+    // 输出
+    print_entries(files, count, opts);
+
+    // 释放
+    free_entries(files, count);
     return 0;
-
 }
 int main(int argc, char *argv[])
 { // 参数数量和存放进来的目录
